@@ -18,6 +18,7 @@ import glob
 import json
 import math
 import os
+import random
 import re
 import sys
 import threading
@@ -372,6 +373,10 @@ class Canvas:
     def rrect(self, x, y, w, h, r, **kw):
         pts = round_rect_pts(x * self.S, y * self.S, w * self.S, h * self.S, r * self.S)
         return self.c.create_polygon(pts, smooth=False, **kw)
+
+    def rect(self, x, y, w, h, **kw):
+        return self.c.create_rectangle(x * self.S, y * self.S,
+                                       (x + w) * self.S, (y + h) * self.S, **kw)
 
     def oval(self, cx, cy, rx, ry, **kw):
         return self.c.create_oval((cx - rx) * self.S, (cy - ry) * self.S,
@@ -736,6 +741,9 @@ class WidgetApp:
         self._hidden_by_auto = False
         self._manually_hidden = False
         self._prev_color = None
+        self._gradient_mode = False
+        self._gradient_top = "#1C1C1E"
+        self._gradient_bottom = "#2A2A2E"
 
         saved = _load_json_state()
         self.backend = saved.get("backend", "opencode")
@@ -813,6 +821,7 @@ class WidgetApp:
         m.add_cascade(label="Backend", menu=backend_menu)
         m.add_command(label="Always on top", command=self.toggle_top)
         m.add_command(label="Refresh now", command=self.refresh_now)
+        m.add_command(label="\uD83C\uDFA8 Mood light", command=self._toggle_gradient)
         m.add_separator()
         m.add_command(label="Hide to tray", command=self._hide_to_tray)
         m.add_command(label="Quit", command=self.quit)
@@ -848,6 +857,16 @@ class WidgetApp:
     def toggle_top(self):
         self.on_top = not self.on_top
         self.root.attributes("-topmost", self.on_top)
+
+    def _random_hex(self):
+        return f"#{random.randint(0,255):02X}{random.randint(0,255):02X}{random.randint(0,255):02X}"
+
+    def _toggle_gradient(self):
+        self._gradient_mode = not self._gradient_mode
+        if self._gradient_mode:
+            self._gradient_top = self._random_hex()
+            self._gradient_bottom = self._random_hex()
+        self.render()
 
     def refresh_now(self):
         self.refresh_data()
@@ -937,12 +956,26 @@ class WidgetApp:
         cy = start_y + i * (CIRCLE_R * 2 + CIRCLE_GAP)
         return cx, cy
 
+    def _draw_gradient(self, w, h):
+        r1, g1, b1 = int(self._gradient_top[1:3],16), int(self._gradient_top[3:5],16), int(self._gradient_top[5:7],16)
+        r2, g2, b2 = int(self._gradient_bottom[1:3],16), int(self._gradient_bottom[3:5],16), int(self._gradient_bottom[5:7],16)
+        bands = 24
+        bh = h / bands
+        for i in range(bands):
+            t = i / (bands - 1)
+            col = f"#{int(r1+(r2-r1)*t):02X}{int(g1+(g2-g1)*t):02X}{int(b1+(b2-b1)*t):02X}"
+            self.cv.rrect(0, i * bh - 1, w, bh + 2, 14, fill=col, outline="")
+
     def render(self):
         c = self.canvas
         c.delete("all")
         w, h = CARD_W, CARD_H
-        self.cv.rrect(0, 0, w, h, 14, fill=CARD_BG, outline="")
-        self.cv.rrect(0, 0, w, h, 14, fill="", outline=CARD_BORDER)
+        if self._gradient_mode:
+            self._draw_gradient(w, h)
+            self.cv.rrect(0, 0, w, h, 14, fill="", outline=CARD_BORDER)
+        else:
+            self.cv.rrect(0, 0, w, h, 14, fill=CARD_BG, outline="")
+            self.cv.rrect(0, 0, w, h, 14, fill="", outline=CARD_BORDER)
 
         st = self.state
         names = ["red", "orange", "green"]
