@@ -520,17 +520,17 @@ if HAS_TRAY:
         b = int(h[5:7], 16)
         return (b << 16) | (g << 8) | r
 
-    _TRAY_COLORS = [_hex_to_bgr(RED), _hex_to_bgr(AMBER), _hex_to_bgr(GREEN)]
-    _TRAY_DIM = _hex_to_bgr(INACTIVE)
     _TRAY_ACTIVE = {"red": 0, "orange": 1, "green": 2, "idle": -1}
 
-    def _create_tray_icon(size=32, active="idle"):
-        cr = max(3, size // 8)
-        gap = cr // 2
-        cx = size // 2
-        total = 3 * cr * 2 + 2 * gap
-        sy = (size - total) // 2 + cr
+    def _create_tray_icon(size=64, active="idle"):
+        cx = cy = size // 2
+        outer_r = size // 2 - 1
+        inner_r = max(4, outer_r - 4)
         active_idx = _TRAY_ACTIVE.get(active, -1)
+
+        colors = [_hex_to_bgr(RED), _hex_to_bgr(AMBER), _hex_to_bgr(GREEN)]
+        fill = colors[active_idx] if active_idx >= 0 else _hex_to_bgr(IDLE_GREEN)
+        ring = _hex_to_bgr(INACTIVE)
 
         hdc_screen = _U32.GetDC(None)
         hdc = _G32.CreateCompatibleDC(hdc_screen)
@@ -544,21 +544,15 @@ if HAS_TRAY:
         _G32.PatBlt(hdc, 0, 0, size, size, 0x0042)
         _G32.DeleteObject(bg)
 
-        for i in range(3):
-            cy = sy + i * (cr * 2 + gap)
-            col = _TRAY_COLORS[i] if i == active_idx else _TRAY_DIM
-            brush = _G32.CreateSolidBrush(col)
-            _G32.SelectObject(hdc, brush)
-            _G32.Ellipse(hdc, cx - cr, cy - cr, cx + cr, cy + cr)
-            _G32.DeleteObject(brush)
+        brush = _G32.CreateSolidBrush(ring)
+        _G32.SelectObject(hdc, brush)
+        _G32.Ellipse(hdc, cx - outer_r, cy - outer_r, cx + outer_r, cy + outer_r)
+        _G32.DeleteObject(brush)
 
-        for i in range(3):
-            cy = sy + i * (cr * 2 + gap)
-            col = _TRAY_COLORS[i] if i == active_idx else _TRAY_DIM
-            pen = _G32.CreatePen(_PS_SOLID, 1, _TRAY_DIM if i != active_idx else col)
-            old_pen = _G32.SelectObject(hdc, pen)
-            _G32.Ellipse(hdc, cx - cr, cy - cr, cx + cr, cy + cr)
-            _G32.DeleteObject(_G32.SelectObject(hdc, old_pen))
+        brush = _G32.CreateSolidBrush(fill)
+        _G32.SelectObject(hdc, brush)
+        _G32.Ellipse(hdc, cx - inner_r, cy - inner_r, cx + inner_r, cy + inner_r)
+        _G32.DeleteObject(brush)
 
         _G32.SelectObject(hdc, old_bm)
         _G32.DeleteDC(hdc)
@@ -568,17 +562,15 @@ if HAS_TRAY:
         _G32.PatBlt(hdc_mask, 0, 0, size, size, 0x0042)
         mask_brush = _G32.CreateSolidBrush(0x000000)
         _G32.SelectObject(hdc_mask, mask_brush)
-        for i in range(3):
-            cy = sy + i * (cr * 2 + gap)
-            _G32.Ellipse(hdc_mask, cx - cr, cy - cr, cx + cr, cy + cr)
+        _G32.Ellipse(hdc_mask, cx - outer_r, cy - outer_r, cx + outer_r, cy + outer_r)
         _G32.DeleteObject(mask_brush)
         _G32.SelectObject(hdc_mask, old_mask)
         _G32.DeleteDC(hdc_mask)
 
         ii = _ICONINFO()
         ii.fIcon = True
-        ii.xHotspot = size // 2
-        ii.yHotspot = size // 2
+        ii.xHotspot = cx
+        ii.yHotspot = cy
         ii.hbmMask = hbm_mask
         ii.hbmColor = hbm_color
         hicon = _U32.CreateIconIndirect(ctypes.byref(ii))
@@ -641,7 +633,7 @@ if HAS_TRAY:
                 0, self._cls_name, "Traffic Light", 0, 0, 0, 0, 0,
                 ctypes.c_void_p(-3), None, self._hinst, None)
 
-            self._hicon = _create_tray_icon(32, "idle")
+            self._hicon = _create_tray_icon(64, "idle")
             self._current_state = "idle"
 
             nid = _NOTIFYICONDATAW()
@@ -696,7 +688,7 @@ if HAS_TRAY:
             if state == self._current_state:
                 return
             self._current_state = state
-            new_icon = _create_tray_icon(32, state)
+            new_icon = _create_tray_icon(64, state)
             if new_icon:
                 self._nid.hIcon = new_icon
                 _S32.Shell_NotifyIconW(_NIM_MODIFY, ctypes.byref(self._nid))
@@ -1043,12 +1035,11 @@ def write_icon(path: str, png_path: Optional[str] = None):
     size = 256
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    cx, cy_base, cr = size // 2, size // 4, size // 12
-    cgap = size // 20
-    colors = [RED, AMBER, GREEN]
-    for i, col in enumerate(colors):
-        y = cy_base + i * (cr * 2 + cgap)
-        d.ellipse([cx - cr, y - cr, cx + cr, y + cr], fill=col)
+    cx, cy = size // 2, size // 2
+    outer = size // 2 - 6
+    inner = outer - 18
+    d.ellipse([cx - outer, cy - outer, cx + outer, cy + outer], fill=INACTIVE)
+    d.ellipse([cx - inner, cy - inner, cx + inner, cy + inner], fill=GREEN)
     img.save(path, format="ICO",
              sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
     print(f"icon: {path}")
