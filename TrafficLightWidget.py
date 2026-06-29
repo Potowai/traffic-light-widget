@@ -505,7 +505,18 @@ if HAS_TRAY:
         b = int(h[5:7], 16)
         return (b << 16) | (g << 8) | r
 
-    def _create_tray_icon(size=32, color_rgb=(0xFF, 0x41, 0x36)):
+    _TRAY_COLORS = [_hex_to_bgr(RED), _hex_to_bgr(AMBER), _hex_to_bgr(GREEN)]
+    _TRAY_DIM = _hex_to_bgr(INACTIVE)
+    _TRAY_ACTIVE = {"red": 0, "orange": 1, "green": 2, "idle": -1}
+
+    def _create_tray_icon(size=32, active="idle"):
+        cr = max(3, size // 8)
+        gap = cr // 2
+        cx = size // 2
+        total = 3 * cr * 2 + 2 * gap
+        sy = (size - total) // 2 + cr
+        active_idx = _TRAY_ACTIVE.get(active, -1)
+
         hdc_screen = _U32.GetDC(None)
         hdc = _G32.CreateCompatibleDC(hdc_screen)
         hbm_color = _G32.CreateCompatibleBitmap(hdc_screen, size, size)
@@ -518,15 +529,21 @@ if HAS_TRAY:
         _G32.PatBlt(hdc, 0, 0, size, size, 0x0042)
         _G32.DeleteObject(bg)
 
-        brush = _G32.CreateSolidBrush(
-            (color_rgb[2] << 16) | (color_rgb[1] << 8) | color_rgb[0])
-        _G32.SelectObject(hdc, brush)
-        _G32.Ellipse(hdc, 4, 4, size - 4, size - 4)
-        old_pen = _G32.SelectObject(hdc, _G32.CreatePen(_PS_SOLID, 1, 0x555555))
-        _G32.Ellipse(hdc, 4, 4, size - 4, size - 4)
-        _G32.DeleteObject(_G32.SelectObject(hdc, old_pen))
+        for i in range(3):
+            cy = sy + i * (cr * 2 + gap)
+            col = _TRAY_COLORS[i] if i == active_idx else _TRAY_DIM
+            brush = _G32.CreateSolidBrush(col)
+            _G32.SelectObject(hdc, brush)
+            _G32.Ellipse(hdc, cx - cr, cy - cr, cx + cr, cy + cr)
+            _G32.SelectObject(hdc, old_bm)
+            _G32.DeleteObject(brush)
+            pen = _G32.CreatePen(_PS_SOLID, 1, _TRAY_DIM)
+            old_pen = _G32.SelectObject(hdc, pen)
+            _G32.Ellipse(hdc, cx - cr, cy - cr, cx + cr, cy + cr)
+            _G32.DeleteObject(_G32.SelectObject(hdc, old_pen))
+            _G32.SelectObject(hdc, old_bm)
+
         _G32.SelectObject(hdc, old_bm)
-        _G32.DeleteObject(brush)
         _G32.DeleteDC(hdc)
 
         hdc_mask = _G32.CreateCompatibleDC(None)
@@ -534,7 +551,10 @@ if HAS_TRAY:
         _G32.PatBlt(hdc_mask, 0, 0, size, size, 0x0042)
         mask_brush = _G32.CreateSolidBrush(0x000000)
         _G32.SelectObject(hdc_mask, mask_brush)
-        _G32.Ellipse(hdc_mask, 4, 4, size - 4, size - 4)
+        for i in range(3):
+            cy = sy + i * (cr * 2 + gap)
+            _G32.Ellipse(hdc_mask, cx - cr, cy - cr, cx + cr, cy + cr)
+        _G32.DeleteObject(_G32.SelectObject(hdc_mask, mask_brush))
         _G32.SelectObject(hdc_mask, old_mask)
         _G32.DeleteDC(hdc_mask)
         _G32.DeleteObject(mask_brush)
@@ -562,7 +582,7 @@ if HAS_TRAY:
             self._wndproc_ref = None
             self._cls_name = "TrafficLightTray"
             self._hinst = _K32.GetModuleHandleW(None)
-            self._current_bgr = 0xFF4136
+            self._current_state = "idle"
 
         def start(self):
             self._thread = threading.Thread(target=self._run, daemon=True)
@@ -604,8 +624,8 @@ if HAS_TRAY:
                 0, self._cls_name, "Traffic Light", 0, 0, 0, 0, 0,
                 ctypes.c_void_p(-3), None, self._hinst, None)
 
-            self._hicon = _create_tray_icon(32, (0x3A, 0x3A, 0x3C))
-            self._current_bgr = _hex_to_bgr(INACTIVE)
+            self._hicon = _create_tray_icon(32, "idle")
+            self._current_state = "idle"
 
             nid = _NOTIFYICONDATAW()
             nid.cbSize = ctypes.sizeof(nid)
@@ -653,17 +673,13 @@ if HAS_TRAY:
             self._nid.szTip = text[:127]
             _S32.Shell_NotifyIconW(_NIM_MODIFY, ctypes.byref(self._nid))
 
-        def update_icon(self, color_hex: str):
+        def update_icon(self, state: str):
             if not self._nid or not self._hwnd:
                 return
-            bgr = _hex_to_bgr(color_hex)
-            if bgr == self._current_bgr:
+            if state == self._current_state:
                 return
-            self._current_bgr = bgr
-            r = (bgr >> 16) & 0xFF
-            g = (bgr >> 8) & 0xFF
-            b = bgr & 0xFF
-            new_icon = _create_tray_icon(32, (b, g, r))
+            self._current_state = state
+            new_icon = _create_tray_icon(32, state)
             if new_icon:
                 self._nid.hIcon = new_icon
                 _S32.Shell_NotifyIconW(_NIM_MODIFY, ctypes.byref(self._nid))
@@ -684,18 +700,11 @@ else:
             pass
         def update_tooltip(self, text):
             pass
-        def update_icon(self, color_hex):
+        def update_icon(self, state):
             pass
 
 
 # --- widget app --------------------------------------------------------------
-
-_COLOR_MAP = {
-    "red": RED,
-    "orange": AMBER,
-    "green": GREEN,
-    "idle": INACTIVE,
-}
 
 
 class WidgetApp:
@@ -944,9 +953,8 @@ class WidgetApp:
         if hasattr(self, "_tray"):
             backend_label = {"opencode": "OC", "copilot": "CP", "auto": "AU"}.get(st.backend, st.backend)
             tip = f"{st.color} · {backend_label}"
-            color_hex = _COLOR_MAP.get(st.color, INACTIVE)
             self._tray.update_tooltip(tip)
-            self._tray.update_icon(color_hex)
+            self._tray.update_icon(st.color)
 
     def run(self):
         self.root.mainloop()
