@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import winsound
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from tkinter import font as tkfont
@@ -75,7 +76,7 @@ COPILOT_SESSION_DIR = os.path.join(os.path.expanduser("~"), ".copilot", "session
 STATE_DIR = os.path.join(os.path.expanduser("~"), ".config", "traffic-light-widget")
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
 
-ACTIVITY_TIMEOUT = 3.5
+ACTIVITY_TIMEOUT = 8.0
 ASK_TIMEOUT = 30.0
 POLL_INTERVAL = 2.0
 TICK_INTERVAL = 1.0
@@ -163,13 +164,27 @@ def compute_opencode(now: float) -> LightState:
         if ts is None:
             continue
 
-        if "message=stream" in line or "message=loop" in line or "message=process" in line:
+        if "message=stream" in line:
             if ts > last_work:
                 last_work = ts
-                last_work_note = "stream/loop/process"
+                last_work_note = "stream"
 
-        if "action.action=allow" in line and (
-                "bash" in line or " edit" in line or " write" in line):
+        if "message=loop" in line or "message=process" in line:
+            if ts > last_work:
+                last_work = ts
+                last_work_note = "loop/process"
+
+        if "message=tracking" in line:
+            if ts > last_work:
+                last_work = ts
+                last_work_note = "tracking"
+
+        if '"touching file"' in line or '"resolved path"' in line:
+            if ts > last_work:
+                last_work = ts
+                last_work_note = "file"
+
+        if "action.action=allow" in line:
             if ts > last_work:
                 last_work = ts
                 last_work_note = "tool"
@@ -535,13 +550,15 @@ if HAS_TRAY:
             brush = _G32.CreateSolidBrush(col)
             _G32.SelectObject(hdc, brush)
             _G32.Ellipse(hdc, cx - cr, cy - cr, cx + cr, cy + cr)
-            _G32.SelectObject(hdc, old_bm)
             _G32.DeleteObject(brush)
-            pen = _G32.CreatePen(_PS_SOLID, 1, _TRAY_DIM)
+
+        for i in range(3):
+            cy = sy + i * (cr * 2 + gap)
+            col = _TRAY_COLORS[i] if i == active_idx else _TRAY_DIM
+            pen = _G32.CreatePen(_PS_SOLID, 1, _TRAY_DIM if i != active_idx else col)
             old_pen = _G32.SelectObject(hdc, pen)
             _G32.Ellipse(hdc, cx - cr, cy - cr, cx + cr, cy + cr)
             _G32.DeleteObject(_G32.SelectObject(hdc, old_pen))
-            _G32.SelectObject(hdc, old_bm)
 
         _G32.SelectObject(hdc, old_bm)
         _G32.DeleteDC(hdc)
@@ -554,10 +571,9 @@ if HAS_TRAY:
         for i in range(3):
             cy = sy + i * (cr * 2 + gap)
             _G32.Ellipse(hdc_mask, cx - cr, cy - cr, cx + cr, cy + cr)
-        _G32.DeleteObject(_G32.SelectObject(hdc_mask, mask_brush))
+        _G32.DeleteObject(mask_brush)
         _G32.SelectObject(hdc_mask, old_mask)
         _G32.DeleteDC(hdc_mask)
-        _G32.DeleteObject(mask_brush)
 
         ii = _ICONINFO()
         ii.fIcon = True
@@ -566,6 +582,7 @@ if HAS_TRAY:
         ii.hbmMask = hbm_mask
         ii.hbmColor = hbm_color
         hicon = _U32.CreateIconIndirect(ctypes.byref(ii))
+        _G32.SelectObject(hdc, old_bm)
         _G32.DeleteObject(hbm_color)
         _G32.DeleteObject(hbm_mask)
         return hicon
@@ -726,6 +743,7 @@ class WidgetApp:
         self._idle_since = None
         self._hidden_by_auto = False
         self._manually_hidden = False
+        self._prev_color = None
 
         saved = _load_json_state()
         self.backend = saved.get("backend", "opencode")
@@ -898,6 +916,14 @@ class WidgetApp:
         either_active = oc_state.color != "idle" or cp_state.color != "idle"
 
         self.refresh_data()
+
+        cur = self.state.color
+        if self._prev_color in ("red", "orange") and cur in ("green", "idle"):
+            try:
+                winsound.PlaySound("SystemAsterisk", winsound.SND_ALIAS | winsound.SND_ASYNC)
+            except Exception:
+                pass
+        self._prev_color = cur
 
         if not either_active:
             if self._idle_since is None:
