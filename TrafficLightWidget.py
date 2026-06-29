@@ -956,26 +956,33 @@ class WidgetApp:
         cy = start_y + i * (CIRCLE_R * 2 + CIRCLE_GAP)
         return cx, cy
 
-    def _draw_gradient(self, w, h):
-        r1, g1, b1 = int(self._gradient_top[1:3],16), int(self._gradient_top[3:5],16), int(self._gradient_top[5:7],16)
-        r2, g2, b2 = int(self._gradient_bottom[1:3],16), int(self._gradient_bottom[3:5],16), int(self._gradient_bottom[5:7],16)
-        bands = 24
-        bh = h / bands
-        for i in range(bands):
-            t = i / (bands - 1)
-            col = f"#{int(r1+(r2-r1)*t):02X}{int(g1+(g2-g1)*t):02X}{int(b1+(b2-b1)*t):02X}"
-            self.cv.rrect(0, i * bh - 1, w, bh + 2, 14, fill=col, outline="")
-
     def render(self):
         c = self.canvas
         c.delete("all")
         w, h = CARD_W, CARD_H
+        CR = 14
+
         if self._gradient_mode:
-            self._draw_gradient(w, h)
-            self.cv.rrect(0, 0, w, h, 14, fill="", outline=CARD_BORDER)
+            tcol = self._gradient_top
+            bcol = self._gradient_bottom
+            r1 = int(tcol[1:3],16); g1 = int(tcol[3:5],16); b1 = int(tcol[5:7],16)
+            r2 = int(bcol[1:3],16); g2 = int(bcol[3:5],16); b2 = int(bcol[5:7],16)
+
+            self.cv.rrect(0, 0, w, h, CR, fill=tcol, outline="")
+
+            body_top = CR
+            body_bot = h - CR
+            bands = 16
+            bh = (body_bot - body_top) / bands
+            for i in range(bands):
+                t = i / (bands - 1)
+                col = f"#{int(r1+(r2-r1)*t):02X}{int(g1+(g2-g1)*t):02X}{int(b1+(b2-b1)*t):02X}"
+                self.cv.rect(0, body_top + i * bh, w, bh + 1, fill=col, outline="")
+
+            self.cv.rrect(0, 0, w, h, CR, fill="", outline=CARD_BORDER)
         else:
-            self.cv.rrect(0, 0, w, h, 14, fill=CARD_BG, outline="")
-            self.cv.rrect(0, 0, w, h, 14, fill="", outline=CARD_BORDER)
+            self.cv.rrect(0, 0, w, h, CR, fill=CARD_BG, outline="")
+            self.cv.rrect(0, 0, w, h, CR, fill="", outline=CARD_BORDER)
 
         st = self.state
         names = ["red", "orange", "green"]
