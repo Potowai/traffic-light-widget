@@ -70,10 +70,11 @@ GLOW_RED = _glow_blend(RED, 0.4)
 GLOW_AMBER = _glow_blend(AMBER, 0.4)
 GLOW_GREEN = _glow_blend(GREEN, 0.4)
 
-BACKENDS = ["opencode", "copilot", "auto"]
+BACKENDS = ["opencode", "copilot", "codex", "auto"]
 
 OPENCODE_LOG_DIR = os.path.join(os.path.expanduser("~"), ".local", "share", "opencode", "log")
 COPILOT_SESSION_DIR = os.path.join(os.path.expanduser("~"), ".copilot", "session-state")
+CODEX_SESSIONS_DIR = os.path.join(os.path.expanduser("~"), ".codex", "sessions")
 STATE_DIR = os.path.join(os.path.expanduser("~"), ".config", "traffic-light-widget")
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
 
@@ -327,24 +328,111 @@ def compute_copilot(now: float) -> LightState:
     return LightState(color="idle", label="Idle", backend="copilot")
 
 
+# --- Codex backend -----------------------------------------------------------
+
+def _find_codex_session() -> Optional[str]:
+    if not os.path.isdir(CODEX_SESSIONS_DIR):
+        return None
+    best = None
+    best_mtime = 0
+    for root, dirs, files in os.walk(CODEX_SESSIONS_DIR):
+        for f in files:
+            if f.startswith("rollout-") and f.endswith(".jsonl"):
+                fp = os.path.join(root, f)
+                try:
+                    mt = os.path.getmtime(fp)
+                    if mt > best_mtime:
+                        best_mtime = mt
+                        best = fp
+                except OSError:
+                    continue
+    return best
+
+
+def compute_codex(now: float) -> LightState:
+    source = _find_codex_session()
+    if not source:
+        return LightState(color="idle", label="Idle", backend="codex", detail="no session")
+
+    lines = _tail_file(source, TAIL_LINES)
+
+    last_activity = 0.0
+    last_func_call = 0.0
+    last_ask = 0.0
+    assistant_msg_content = ""
+
+    for line in lines:
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+
+        ts_str = obj.get("timestamp")
+        ts = _parse_iso(ts_str) if isinstance(ts_str, str) else None
+        if ts is None:
+            continue
+
+        ev = obj.get("type", "")
+
+        if ev == "response_item":
+            pl = obj.get("payload", {})
+            pt = pl.get("type", "")
+            if pt == "function_call":
+                if ts > last_func_call:
+                    last_func_call = ts
+                last_activity = max(last_activity, ts)
+            elif pt in ("function_call_output", "tool_use"):
+                last_activity = max(last_activity, ts)
+            elif pt == "message":
+                last_activity = max(last_activity, ts)
+                for c in pl.get("content", []):
+                    if c.get("type") == "output_text":
+                        content = c.get("text", "")
+                        if content:
+                            assistant_msg_content = content
+
+        elif ev == "event_msg":
+            pl = obj.get("payload", {})
+            pt = pl.get("type", "")
+            if pt == "token_count":
+                last_activity = max(last_activity, ts)
+            elif pt == "agent_message":
+                msg = pl.get("message", "")
+                last_activity = max(last_activity, ts)
+                if msg:
+                    assistant_msg_content = msg
+            elif pt == "ask_user":
+                if ts > last_ask:
+                    last_ask = ts
+
+    if last_func_call > 0 and (now - last_func_call) < ACTIVITY_TIMEOUT:
+        return LightState(
+            color="red", label="Coding", backend="codex", detail="tool execution"
+        )
+
+    if last_activity > 0 and (now - last_activity) < ACTIVITY_TIMEOUT:
+        if assistant_msg_content and assistant_msg_content.rstrip().endswith(("?", "\u00BF")):
+            if last_ask == 0 or last_activity > last_ask:
+                return LightState(color="orange", label="Asking", backend="codex", detail="question")
+        return LightState(color="red", label="Coding", backend="codex", detail="active")
+
+    if last_ask > 0 and last_ask > last_activity and (now - last_ask) < ASK_TIMEOUT:
+        return LightState(color="orange", label="Asking", backend="codex", detail="pending")
+
+    if last_activity > 0 and (now - last_activity) < ASK_TIMEOUT:
+        return LightState(color="green", label="Done", backend="codex", detail="recent")
+
+    return LightState(color="idle", label="Idle", backend="codex")
+
+
 # --- auto backend selector ---------------------------------------------------
 
 def compute_auto(now: float) -> LightState:
-    oc = compute_opencode(now)
-    cp = compute_copilot(now)
-
-    oc_active = oc.color != "idle"
-    cp_active = cp.color != "idle"
-
-    if oc_active and not cp_active:
-        oc.backend = "auto"
-        return oc
-    if cp_active and not oc_active:
-        cp.backend = "auto"
-        return cp
-    if oc_active and cp_active:
-        oc.backend = "auto"
-        return oc
+    states = [compute_opencode(now), compute_copilot(now), compute_codex(now)]
+    active = [s for s in states if s.color != "idle"]
+    if active:
+        active[0].backend = "auto"
+        return active[0]
     return LightState(color="idle", label="Idle", backend="auto")
 
 
@@ -878,6 +966,8 @@ class WidgetApp:
             self.state = compute_auto(now)
         elif self.backend == "copilot":
             self.state = compute_copilot(now)
+        elif self.backend == "codex":
+            self.state = compute_codex(now)
         else:
             self.state = compute_opencode(now)
 
@@ -924,7 +1014,8 @@ class WidgetApp:
 
         oc_state = compute_opencode(now)
         cp_state = compute_copilot(now)
-        either_active = oc_state.color != "idle" or cp_state.color != "idle"
+        cx_state = compute_codex(now)
+        either_active = oc_state.color != "idle" or cp_state.color != "idle" or cx_state.color != "idle"
 
         self.refresh_data()
 
@@ -1009,7 +1100,7 @@ class WidgetApp:
                              fill=INACTIVE, outline=INACTIVE_BORDER)
 
         if hasattr(self, "_tray"):
-            backend_label = {"opencode": "OC", "copilot": "CP", "auto": "AU"}.get(st.backend, st.backend)
+            backend_label = {"opencode": "OC", "copilot": "CP", "codex": "CX", "auto": "AU"}.get(st.backend, st.backend)
             tip = f"{st.color} · {backend_label}"
             self._tray.update_tooltip(tip)
             self._tray.update_icon(st.color)
